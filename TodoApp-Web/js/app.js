@@ -1,18 +1,13 @@
 /**
- * TASKMASTER WEB - MULTI-USER AUTH & REALTIME SYNC ENGINE
+ * TASKMASTER WEB - FIREBASE REALTIME CLOUD SYNC & LOCAL FALLBACK ENGINE
  */
 
 class TaskMasterApp {
   constructor() {
-    this.apiBaseUrl = window.location.origin.startsWith('http') && !window.location.origin.startsWith('file:') 
-      ? `${window.location.origin}/api` 
-      : 'http://localhost:3000/api';
-    
-    this.currentUser = this.loadCurrentUser();
+    this.currentUser = null;
     this.currentView = "tasks";
-    this.isOnline = false;
-    this.tasks = this.loadLocalTasks();
-    this.notes = this.loadLocalNotes();
+    this.tasks = [];
+    this.notes = [];
     
     // Task filters
     this.currentCategory = "todas";
@@ -27,128 +22,152 @@ class TaskMasterApp {
     this.selectedNoteColor = "#fef9c3";
 
     // Auth state
-    this.authMode = "login"; // 'login' or 'register'
+    this.authMode = "login";
 
     this.initElements();
     this.initTheme();
+    this.initFirebase();
     this.initEvents();
+  }
+
+  initFirebase() {
+    this.isFirebaseReady = false;
+
+    try {
+      if (window.firebase && window.firebaseConfig && window.firebaseConfig.apiKey !== "TU_API_KEY") {
+        if (!firebase.apps.length) {
+          firebase.initializeApp(window.firebaseConfig);
+        }
+        this.auth = firebase.auth();
+        this.db = firebase.firestore();
+
+        // Enable offline persistence
+        this.db.enablePersistence({ synchronizeTabs: true }).catch((err) => {
+          console.warn("Firestore offline persistence:", err.code);
+        });
+
+        this.isFirebaseReady = true;
+        this.updateSyncBadge(true, "🔥 Firebase Conectado 24/7");
+
+        // Auth state listener
+        this.auth.onAuthStateChanged((user) => {
+          if (user) {
+            this.currentUser = {
+              id: user.uid,
+              name: user.displayName || user.email.split("@")[0],
+              email: user.email
+            };
+            this.setupFirestoreListeners();
+          } else {
+            this.currentUser = null;
+            this.detachListeners();
+            this.loadLocalData();
+          }
+          this.updateUserUI();
+          this.render();
+        });
+
+        return;
+      }
+    } catch (e) {
+      console.warn("Firebase no configurado aún o error:", e);
+    }
+
+    // Fallback if Firebase not configured yet
+    this.loadLocalData();
     this.updateUserUI();
     this.render();
-
-    // Initial server sync & polling
-    this.syncWithServer();
-    setInterval(() => this.syncWithServer(true), 5000);
+    this.updateSyncBadge(false, "Modo Local (Configura Firebase para 24/7)");
   }
 
-  loadCurrentUser() {
-    const saved = localStorage.getItem("taskmaster_user");
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+  setupFirestoreListeners() {
+    if (!this.isFirebaseReady || !this.currentUser) return;
+    const userId = this.currentUser.id;
+
+    // Tasks realtime listener
+    this.tasksUnsubscribe = this.db
+      .collection("users")
+      .doc(userId)
+      .collection("tasks")
+      .orderBy("createdAt", "desc")
+      .onSnapshot(
+        (snapshot) => {
+          this.tasks = [];
+          snapshot.forEach((doc) => {
+            this.tasks.push({ id: Number(doc.id) || doc.id, ...doc.data() });
+          });
+          this.saveLocalTasks();
+          this.renderTasks();
+        },
+        (error) => {
+          console.error("Error al escuchar tareas Firestore:", error);
+        }
+      );
+
+    // Notes realtime listener
+    this.notesUnsubscribe = this.db
+      .collection("users")
+      .doc(userId)
+      .collection("notes")
+      .orderBy("updatedAt", "desc")
+      .onSnapshot(
+        (snapshot) => {
+          this.notes = [];
+          snapshot.forEach((doc) => {
+            this.notes.push({ id: Number(doc.id) || doc.id, ...doc.data() });
+          });
+          this.saveLocalNotes();
+          this.renderNotes();
+        },
+        (error) => {
+          console.error("Error al escuchar notas Firestore:", error);
+        }
+      );
+  }
+
+  detachListeners() {
+    if (this.tasksUnsubscribe) this.tasksUnsubscribe();
+    if (this.notesUnsubscribe) this.notesUnsubscribe();
+  }
+
+  loadLocalData() {
+    const savedUser = localStorage.getItem("taskmaster_user");
+    if (savedUser) {
+      try { this.currentUser = JSON.parse(savedUser); } catch (e) {}
     }
-    return null;
-  }
-
-  saveCurrentUser(user) {
-    if (user) {
-      localStorage.setItem("taskmaster_user", JSON.stringify(user));
-    } else {
-      localStorage.removeItem("taskmaster_user");
+    const prefix = this.currentUser ? `taskmaster_${this.currentUser.id}_` : 'taskmaster_guest_';
+    
+    try {
+      this.tasks = JSON.parse(localStorage.getItem(`${prefix}tasks`)) || [];
+      this.notes = JSON.parse(localStorage.getItem(`${prefix}notes`)) || [];
+    } catch (e) {
+      this.tasks = [];
+      this.notes = [];
     }
-    this.currentUser = user;
-  }
-
-  getStoragePrefix() {
-    return this.currentUser ? `taskmaster_${this.currentUser.id}_` : 'taskmaster_guest_';
-  }
-
-  loadLocalTasks() {
-    const prefix = this.getStoragePrefix();
-    const saved = localStorage.getItem(`${prefix}tasks`);
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
-    }
-    return [];
   }
 
   saveLocalTasks() {
-    const prefix = this.getStoragePrefix();
+    const prefix = this.currentUser ? `taskmaster_${this.currentUser.id}_` : 'taskmaster_guest_';
     localStorage.setItem(`${prefix}tasks`, JSON.stringify(this.tasks));
   }
 
-  loadLocalNotes() {
-    const prefix = this.getStoragePrefix();
-    const saved = localStorage.getItem(`${prefix}notes`);
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error(e); }
-    }
-    return [];
-  }
-
   saveLocalNotes() {
-    const prefix = this.getStoragePrefix();
+    const prefix = this.currentUser ? `taskmaster_${this.currentUser.id}_` : 'taskmaster_guest_';
     localStorage.setItem(`${prefix}notes`, JSON.stringify(this.notes));
-  }
-
-  async syncWithServer(silent = false) {
-    if (!this.currentUser) {
-      this.updateSyncBadge(false, "Inicia sesión para sincronizar");
-      return;
-    }
-
-    try {
-      const userId = this.currentUser.id;
-
-      const tasksRes = await fetch(`${this.apiBaseUrl}/tasks/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, tasks: this.tasks })
-      });
-
-      const notesRes = await fetch(`${this.apiBaseUrl}/notes/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, notes: this.notes })
-      });
-
-      if (tasksRes.ok && notesRes.ok) {
-        const tasksData = await tasksRes.json();
-        const notesData = await notesRes.json();
-
-        if (tasksData && Array.isArray(tasksData.tasks)) {
-          this.tasks = tasksData.tasks;
-          this.saveLocalTasks();
-        }
-        if (notesData && Array.isArray(notesData.notes)) {
-          this.notes = notesData.notes;
-          this.saveLocalNotes();
-        }
-
-        this.isOnline = true;
-        this.updateSyncBadge(true);
-        this.render();
-        if (!silent) this.showToast("Sincronizado con tu cuenta 🔄");
-        return;
-      }
-      throw new Error("Respuesta inválida del servidor");
-    } catch (err) {
-      this.isOnline = false;
-      this.updateSyncBadge(false);
-      if (!silent) this.showToast("Modo local (Sin conexión)");
-    }
   }
 
   updateSyncBadge(online, customMsg = null) {
     if (!this.syncBadge) return;
     if (online) {
-      this.syncBadge.innerHTML = "🟢 Sincronizado";
+      this.syncBadge.innerHTML = "🔥 Firebase 24/7";
       this.syncBadge.style.background = "rgba(16, 185, 129, 0.15)";
       this.syncBadge.style.color = "#10b981";
-      this.syncBadge.title = `Conectado como ${this.currentUser ? this.currentUser.name : ''}. Sincronizado con Android.`;
+      this.syncBadge.title = "Conectado a Google Firebase. Sincronización en tiempo real 24/7.";
     } else {
       this.syncBadge.innerHTML = customMsg ? `🟡 ${customMsg}` : "🟡 Modo Local";
       this.syncBadge.style.background = "rgba(245, 158, 11, 0.15)";
       this.syncBadge.style.color = "#f59e0b";
-      this.syncBadge.title = "Sin conexión al servidor o sesión no iniciada.";
+      this.syncBadge.title = "Guardando en almacenamiento local.";
     }
   }
 
@@ -291,11 +310,6 @@ class TaskMasterApp {
 
     this.btnLogout.addEventListener("click", () => this.logout());
 
-    // Sync badge click
-    if (this.syncBadge) {
-      this.syncBadge.addEventListener("click", () => this.syncWithServer(false));
-    }
-
     // Theme Toggle
     this.themeToggleBtn.addEventListener("click", () => this.toggleTheme());
 
@@ -422,40 +436,37 @@ class TaskMasterApp {
 
     this.authErrorMsg.style.display = "none";
 
-    const endpoint = this.authMode === "login" ? "/auth/login" : "/auth/register";
-    const payload = this.authMode === "login" ? { email, password } : { name, email, password };
-
     try {
       this.btnAuthSubmit.disabled = true;
       this.btnAuthSubmit.textContent = "Conectando...";
 
-      const res = await fetch(`${this.apiBaseUrl}${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "Ocurrió un error en el servidor");
+      if (this.isFirebaseReady) {
+        if (this.authMode === "login") {
+          await this.auth.signInWithEmailAndPassword(email, password);
+        } else {
+          const userCred = await this.auth.createUserWithEmailAndPassword(email, password);
+          if (name && userCred.user) {
+            await userCred.user.updateProfile({ displayName: name });
+          }
+        }
+      } else {
+        // Fallback local account
+        this.currentUser = {
+          id: 'user_' + Date.now(),
+          name: name || email.split('@')[0],
+          email: email
+        };
+        localStorage.setItem("taskmaster_user", JSON.stringify(this.currentUser));
+        this.loadLocalData();
+        this.updateUserUI();
+        this.render();
       }
 
-      // Save user session
-      this.saveCurrentUser(data.user);
-      this.tasks = this.loadLocalTasks();
-      this.notes = this.loadLocalNotes();
-
       this.closeAuthModal();
-      this.updateUserUI();
-      this.showToast(`¡Bienvenido, ${data.user.name}! 🎉`);
-
-      // Sync user data
-      await this.syncWithServer(false);
-      this.render();
+      this.showToast(`¡Bienvenido! 🎉`);
 
     } catch (err) {
-      this.authErrorMsg.textContent = err.message;
+      this.authErrorMsg.textContent = err.message || "Error al autenticar";
       this.authErrorMsg.style.display = "block";
     } finally {
       this.btnAuthSubmit.disabled = false;
@@ -463,13 +474,17 @@ class TaskMasterApp {
     }
   }
 
-  logout() {
+  async logout() {
     if (confirm("¿Deseas cerrar la sesión actual?")) {
-      this.saveCurrentUser(null);
-      this.tasks = this.loadLocalTasks();
-      this.notes = this.loadLocalNotes();
-      this.updateUserUI();
-      this.render();
+      if (this.isFirebaseReady) {
+        await this.auth.signOut();
+      } else {
+        this.currentUser = null;
+        localStorage.removeItem("taskmaster_user");
+        this.loadLocalData();
+        this.updateUserUI();
+        this.render();
+      }
       this.showToast("Sesión cerrada");
     }
   }
@@ -537,35 +552,38 @@ class TaskMasterApp {
     const dueDate = this.taskDueDateInput.value;
     const priority = this.selectedPriority;
     const dueDateMillis = dueDate ? new Date(dueDate).getTime() : null;
-    const userId = this.currentUser ? this.currentUser.id : 'default';
 
     if (this.editingTaskId) {
-      const index = this.tasks.findIndex((t) => t.id === this.editingTaskId);
-      if (index !== -1) {
-        this.tasks[index] = {
-          ...this.tasks[index],
-          title,
-          description,
-          category,
-          dueDate,
-          dueDateMillis,
-          priority,
-          updatedAt: Date.now()
-        };
-        this.showToast("Tarea actualizada exitosamente");
+      const taskData = {
+        title,
+        description,
+        category,
+        dueDate,
+        dueDateMillis,
+        priority,
+        updatedAt: Date.now()
+      };
 
-        if (this.isOnline && this.currentUser) {
-          fetch(`${this.apiBaseUrl}/tasks/${this.editingTaskId}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(this.tasks[index])
-          }).catch(console.error);
+      if (this.isFirebaseReady && this.currentUser) {
+        await this.db
+          .collection("users")
+          .doc(this.currentUser.id)
+          .collection("tasks")
+          .doc(String(this.editingTaskId))
+          .update(taskData);
+      } else {
+        const index = this.tasks.findIndex((t) => t.id === this.editingTaskId);
+        if (index !== -1) {
+          this.tasks[index] = { ...this.tasks[index], ...taskData };
+          this.saveLocalTasks();
+          this.renderTasks();
         }
       }
+      this.showToast("Tarea actualizada");
     } else {
+      const taskId = Date.now();
       const newTask = {
-        id: Date.now(),
-        userId,
+        id: taskId,
         title,
         description,
         category,
@@ -576,54 +594,62 @@ class TaskMasterApp {
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      this.tasks.unshift(newTask);
-      this.showToast("¡Nueva tarea creada!");
 
-      if (this.isOnline && this.currentUser) {
-        fetch(`${this.apiBaseUrl}/tasks`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(newTask)
-        }).catch(console.error);
+      if (this.isFirebaseReady && this.currentUser) {
+        await this.db
+          .collection("users")
+          .doc(this.currentUser.id)
+          .collection("tasks")
+          .doc(String(taskId))
+          .set(newTask);
+      } else {
+        this.tasks.unshift(newTask);
+        this.saveLocalTasks();
+        this.renderTasks();
       }
+      this.showToast("¡Nueva tarea creada!");
     }
 
-    this.saveLocalTasks();
     this.closeTaskModal();
-    this.renderTasks();
   }
 
-  toggleTask(taskId) {
+  async toggleTask(taskId) {
     const task = this.tasks.find((t) => t.id === taskId);
     if (task) {
-      task.isCompleted = !task.isCompleted;
-      task.updatedAt = Date.now();
-      this.saveLocalTasks();
-      this.renderTasks();
-
-      if (this.isOnline && this.currentUser) {
-        fetch(`${this.apiBaseUrl}/tasks/${taskId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(task)
-        }).catch(console.error);
+      const newStatus = !task.isCompleted;
+      if (this.isFirebaseReady && this.currentUser) {
+        await this.db
+          .collection("users")
+          .doc(this.currentUser.id)
+          .collection("tasks")
+          .doc(String(taskId))
+          .update({ isCompleted: newStatus, updatedAt: Date.now() });
+      } else {
+        task.isCompleted = newStatus;
+        task.updatedAt = Date.now();
+        this.saveLocalTasks();
+        this.renderTasks();
       }
-
-      if (task.isCompleted) this.showToast("¡Tarea completada! 🎉");
+      if (newStatus) this.showToast("¡Tarea completada! 🎉");
     }
   }
 
-  deleteTask(taskId) {
+  async deleteTask(taskId) {
     const task = this.tasks.find((t) => t.id === taskId);
     if (!task) return;
 
     if (confirm(`¿Estás seguro de eliminar "${task.title}"?`)) {
-      this.tasks = this.tasks.filter((t) => t.id !== taskId);
-      this.saveLocalTasks();
-      this.renderTasks();
-
-      if (this.isOnline && this.currentUser) {
-        fetch(`${this.apiBaseUrl}/tasks/${taskId}`, { method: "DELETE" }).catch(console.error);
+      if (this.isFirebaseReady && this.currentUser) {
+        await this.db
+          .collection("users")
+          .doc(this.currentUser.id)
+          .collection("tasks")
+          .doc(String(taskId))
+          .delete();
+      } else {
+        this.tasks = this.tasks.filter((t) => t.id !== taskId);
+        this.saveLocalTasks();
+        this.renderTasks();
       }
       this.showToast("Tarea eliminada");
     }
@@ -655,7 +681,7 @@ class TaskMasterApp {
             return a.title.localeCompare(b.title);
           case "created":
           default:
-            return b.createdAt - a.createdAt;
+            return (b.createdAt || 0) - (a.createdAt || 0);
         }
       });
   }
@@ -797,33 +823,36 @@ class TaskMasterApp {
     const title = this.noteTitleInput.value.trim();
     const color = this.selectedNoteColor;
     const isPinned = this.notePinnedInput.checked;
-    const userId = this.currentUser ? this.currentUser.id : 'default';
 
     if (this.editingNoteId) {
-      const index = this.notes.findIndex((n) => n.id === this.editingNoteId);
-      if (index !== -1) {
-        this.notes[index] = {
-          ...this.notes[index],
-          title,
-          content,
-          color,
-          isPinned,
-          updatedAt: Date.now()
-        };
-        this.showToast("Nota actualizada exitosamente");
+      const noteData = {
+        title,
+        content,
+        color,
+        isPinned,
+        updatedAt: Date.now()
+      };
 
-        if (this.isOnline && this.currentUser) {
-          fetch(`${this.apiBaseUrl}/notes/${this.editingNoteId}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(this.notes[index])
-          }).catch(console.error);
+      if (this.isFirebaseReady && this.currentUser) {
+        await this.db
+          .collection("users")
+          .doc(this.currentUser.id)
+          .collection("notes")
+          .doc(String(this.editingNoteId))
+          .update(noteData);
+      } else {
+        const index = this.notes.findIndex((n) => n.id === this.editingNoteId);
+        if (index !== -1) {
+          this.notes[index] = { ...this.notes[index], ...noteData };
+          this.saveLocalNotes();
+          this.renderNotes();
         }
       }
+      this.showToast("Nota actualizada");
     } else {
+      const noteId = Date.now();
       const newNote = {
-        id: Date.now(),
-        userId,
+        id: noteId,
         title,
         content,
         color,
@@ -831,53 +860,62 @@ class TaskMasterApp {
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      this.notes.unshift(newNote);
-      this.showToast("¡Nota rápida guardada!");
 
-      if (this.isOnline && this.currentUser) {
-        fetch(`${this.apiBaseUrl}/notes`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(newNote)
-        }).catch(console.error);
+      if (this.isFirebaseReady && this.currentUser) {
+        await this.db
+          .collection("users")
+          .doc(this.currentUser.id)
+          .collection("notes")
+          .doc(String(noteId))
+          .set(newNote);
+      } else {
+        this.notes.unshift(newNote);
+        this.saveLocalNotes();
+        this.renderNotes();
       }
+      this.showToast("¡Nota rápida guardada!");
     }
 
-    this.saveLocalNotes();
     this.closeNoteModal();
-    this.renderNotes();
   }
 
-  togglePinNote(noteId) {
+  async togglePinNote(noteId) {
     const note = this.notes.find((n) => n.id === noteId);
     if (note) {
-      note.isPinned = !note.isPinned;
-      note.updatedAt = Date.now();
-      this.saveLocalNotes();
-      this.renderNotes();
-
-      if (this.isOnline && this.currentUser) {
-        fetch(`${this.apiBaseUrl}/notes/${noteId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(note)
-        }).catch(console.error);
+      const newPin = !note.isPinned;
+      if (this.isFirebaseReady && this.currentUser) {
+        await this.db
+          .collection("users")
+          .doc(this.currentUser.id)
+          .collection("notes")
+          .doc(String(noteId))
+          .update({ isPinned: newPin, updatedAt: Date.now() });
+      } else {
+        note.isPinned = newPin;
+        note.updatedAt = Date.now();
+        this.saveLocalNotes();
+        this.renderNotes();
       }
-      this.showToast(note.isPinned ? "Nota fijada al inicio 📌" : "Nota desfijada");
+      this.showToast(newPin ? "Nota fijada al inicio 📌" : "Nota desfijada");
     }
   }
 
-  deleteNote(noteId) {
+  async deleteNote(noteId) {
     const note = this.notes.find((n) => n.id === noteId);
     if (!note) return;
 
     if (confirm("¿Estás seguro de eliminar esta nota?")) {
-      this.notes = this.notes.filter((n) => n.id !== noteId);
-      this.saveLocalNotes();
-      this.renderNotes();
-
-      if (this.isOnline && this.currentUser) {
-        fetch(`${this.apiBaseUrl}/notes/${noteId}`, { method: "DELETE" }).catch(console.error);
+      if (this.isFirebaseReady && this.currentUser) {
+        await this.db
+          .collection("users")
+          .doc(this.currentUser.id)
+          .collection("notes")
+          .doc(String(noteId))
+          .delete();
+      } else {
+        this.notes = this.notes.filter((n) => n.id !== noteId);
+        this.saveLocalNotes();
+        this.renderNotes();
       }
       this.showToast("Nota eliminada");
     }
@@ -894,7 +932,7 @@ class TaskMasterApp {
       .sort((a, b) => {
         if (a.isPinned && !b.isPinned) return -1;
         if (!a.isPinned && b.isPinned) return 1;
-        return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
+        return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
       });
   }
 
@@ -914,7 +952,7 @@ class TaskMasterApp {
         cardEl.className = "note-card";
         cardEl.style.backgroundColor = note.color || "#fef9c3";
 
-        const dateStr = new Date(note.updatedAt || note.createdAt).toLocaleDateString("es-ES", {
+        const dateStr = new Date(note.updatedAt || note.createdAt || Date.now()).toLocaleDateString("es-ES", {
           month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
         });
 
@@ -997,22 +1035,14 @@ class TaskMasterApp {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = (e) => {
       try {
         const imported = JSON.parse(e.target.result);
-        if (imported.tasks && Array.isArray(imported.tasks)) {
-          this.tasks = imported.tasks;
-          this.saveLocalTasks();
-        }
-        if (imported.notes && Array.isArray(imported.notes)) {
-          this.notes = imported.notes;
-          this.saveLocalNotes();
-        }
-        if (Array.isArray(imported)) {
-          this.tasks = imported;
-          this.saveLocalTasks();
-        }
-        await this.syncWithServer(true);
+        if (imported.tasks && Array.isArray(imported.tasks)) this.tasks = imported.tasks;
+        if (imported.notes && Array.isArray(imported.notes)) this.notes = imported.notes;
+        if (Array.isArray(imported)) this.tasks = imported;
+        this.saveLocalTasks();
+        this.saveLocalNotes();
         this.render();
         this.showToast("Datos importados con éxito");
       } catch (err) {
