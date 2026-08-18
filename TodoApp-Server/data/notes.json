@@ -1,0 +1,22 @@
+[
+  {
+    "id": 1718000000101,
+    "title": "💡 Ideas para proyectos",
+    "content": "1. App de gestión de tareas y notas sincronizadas.\n2. Diseños modernos con soporte para temas oscuros y claros.\n3. Implementación offline-first.",
+    "color": "#fef9c3",
+    "isPinned": true,
+    "createdAt": 1787015821297,
+    "updatedAt": 1787015821297,
+    "userId": "default"
+  },
+  {
+    "id": 1718000000102,
+    "title": "🛒 Recordatorio rápido",
+    "content": "Revisar las notas antes de la reunión y verificar las tareas pendientes del día.",
+    "color": "#dcfce7",
+    "isPinned": false,
+    "createdAt": 1787014021297,
+    "updatedAt": 1787014021297,
+    "userId": "default"
+  }
+]

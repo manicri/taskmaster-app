@@ -1,0 +1,37 @@
+[
+  {
+    "id": 1787017397999,
+    "title": "Tarea de prueba sync",
+    "description": "",
+    "category": "trabajo",
+    "priority": "alta",
+    "dueDate": "",
+    "dueDateMillis": null,
+    "isCompleted": false,
+    "createdAt": 1787017397999,
+    "updatedAt": 1787017397999,
+    "userId": "default"
+  },
+  {
+    "id": 1718000000001,
+    "title": "¡Bienvenido a TaskMaster sincronizado!",
+    "description": "Tus tareas ahora se sincronizan en tiempo real entre la Web y la App Android.",
+    "category": "personal",
+    "priority": "alta",
+    "dueDate": "2026-08-19T01:44",
+    "isCompleted": false,
+    "createdAt": 1787013848094,
+    "userId": "default"
+  },
+  {
+    "id": 1718000000002,
+    "title": "Revisar proyecto y plan de trabajo",
+    "description": "Organizar pendientes prioritarios, asignar fechas límite y clasificar por etiquetas.",
+    "category": "trabajo",
+    "priority": "media",
+    "dueDate": "2026-08-20T01:44",
+    "isCompleted": false,
+    "createdAt": 1787010248094,
+    "userId": "default"
+  }
+]
